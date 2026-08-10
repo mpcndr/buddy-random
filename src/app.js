@@ -81,8 +81,7 @@ const state = {
   error: "",
   claim: null,
   busy: false,
-  held: false,
-  pinned: false,
+  opened: false,
   confirmReset: false,
   copied: false,
 };
@@ -202,8 +201,7 @@ async function resetAll() {
     claim: null,
     confirmReset: false,
     error: "",
-    pinned: false,
-    held: false,
+    opened: false,
     busy: false,
   });
 }
@@ -234,7 +232,7 @@ function render() {
   const cap = state.round?.total ?? state.total;
   const mine = state.me && state.round?.assignments ? state.round.assignments[state.me.id] : null;
   const buddy = mine ? players.find((p) => p.id === mine.buddyId) : null;
-  const open = state.held || state.pinned;
+  const open = state.opened;
 
   let html = `
     <div class="sb-eyebrow">จดหมายลับ</div>
@@ -311,18 +309,18 @@ function render() {
       html += `
         <div class="sb-seal-zone">
           <div class="sb-label" style="margin-bottom:0">ซองของ ${escapeHtml(state.me.name)}</div>
-          <button class="sb-seal${state.held ? " on" : ""}" id="seal-btn">กดค้าง</button>
-          <div class="sb-hint">กดค้างไว้เพื่ออ่าน ปล่อยเมื่อไหร่ปิดทันที<br />หันจอเข้าหาตัวเองก่อนนะ</div>
+          <button class="sb-seal" data-action="seal-toggle">แตะเพื่อเปิด</button>
+          <div class="sb-hint">แตะเพื่ออ่าน แตะอีกทีเพื่อปิด<br />หันจอเข้าหาตัวเองก่อนนะ</div>
         </div>`;
     } else {
       html += `
-        <div class="sb-reveal" id="reveal-zone" style="touch-action:none">
+        <div class="sb-reveal">
           <div class="sb-label">บัดดี้ของเธอคือ</div>
           <div class="sb-buddy">${escapeHtml(buddy.name)}</div>
           <div class="sb-rule"></div>
           <div class="sb-label">ภารกิจ</div>
           <div class="sb-mission">${escapeHtml(mine.mission)}</div>
-          <button class="sb-pin" data-action="pin-toggle">${state.pinned ? "ปิดซอง" : "เปิดค้างไว้ (ถ้าไม่มีใครมอง)"}</button>
+          <button class="sb-pin" data-action="seal-toggle">ปิดซอง</button>
         </div>`;
     }
     html += `</div></div>`;
@@ -350,28 +348,6 @@ function attachEvents() {
     nameInput.setSelectionRange(nameInput.value.length, nameInput.value.length);
   }
 
-  const sealBtn = document.getElementById("seal-btn");
-  if (sealBtn) {
-    const down = (e) => {
-      sealBtn.setPointerCapture?.(e.pointerId);
-      setState({ held: true });
-    };
-    const up = () => setState({ held: false });
-    sealBtn.addEventListener("pointerdown", down);
-    sealBtn.addEventListener("pointerup", up);
-    sealBtn.addEventListener("pointercancel", up);
-    sealBtn.addEventListener("pointerleave", up);
-    sealBtn.addEventListener("contextmenu", (e) => e.preventDefault());
-  }
-
-  const revealZone = document.getElementById("reveal-zone");
-  if (revealZone) {
-    const up = () => setState({ held: false });
-    revealZone.addEventListener("pointerup", up);
-    revealZone.addEventListener("pointercancel", up);
-    revealZone.addEventListener("pointerleave", up);
-  }
-
   root.querySelectorAll("[data-action]").forEach((elm) => {
     elm.addEventListener("click", () => {
       const action = elm.dataset.action;
@@ -380,7 +356,7 @@ function attachEvents() {
       else if (action === "claim-yes") claimIdentity();
       else if (action === "claim-no") setState({ claim: null });
       else if (action === "pick-total") setState({ total: Number(elm.dataset.n) });
-      else if (action === "pin-toggle") setState({ pinned: !state.pinned });
+      else if (action === "seal-toggle") setState({ opened: !state.opened });
       else if (action === "reset-ask") setState({ confirmReset: true });
       else if (action === "reset-cancel") setState({ confirmReset: false });
       else if (action === "reset-confirm") resetAll();
