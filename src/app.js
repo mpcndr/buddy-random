@@ -128,7 +128,7 @@ async function join() {
 
   try {
     const result = await runTransaction(roundRef, (current) => {
-      const data = current || { total: desiredTotal, players: [], assignments: null, createdAt: Date.now() };
+      const data = current || { total: desiredTotal, players: [], createdAt: Date.now() };
       const dup = data.players.find((p) => p.name.toLowerCase() === clean.toLowerCase());
       if (dup) {
         outcome = "duplicate";
@@ -141,10 +141,10 @@ async function join() {
       }
       const mine = { id: myId, name: clean };
       const nextPlayers = [...data.players, mine];
-      let assignments = data.assignments;
-      if (nextPlayers.length === data.total) assignments = drawAssignments(nextPlayers);
+      const nextRound = { ...data, players: nextPlayers };
+      if (nextPlayers.length === data.total) nextRound.assignments = drawAssignments(nextPlayers);
       outcome = "ok";
-      return { ...data, players: nextPlayers, assignments };
+      return nextRound;
     });
 
     if (outcome === "ok" && result.committed) {
