@@ -95,17 +95,24 @@ function setState(patch) {
 }
 
 // รับข้อมูลรอบแบบเรียลไทม์จาก Firebase
-onValue(roundRef, (snapshot) => {
-  const data = snapshot.val();
-  let mine = state.me;
-  if (mine && data && !data.players.some((p) => p.id === mine.id)) {
-    const sameName = data.players.find((p) => p.name === mine.name);
-    mine = sameName ? { id: sameName.id, name: sameName.name } : null;
-    if (!mine) clearMe();
-    else saveMe(mine);
+onValue(
+  roundRef,
+  (snapshot) => {
+    const data = snapshot.val();
+    let mine = state.me;
+    if (mine && data && !data.players.some((p) => p.id === mine.id)) {
+      const sameName = data.players.find((p) => p.name === mine.name);
+      mine = sameName ? { id: sameName.id, name: sameName.name } : null;
+      if (!mine) clearMe();
+      else saveMe(mine);
+    }
+    setState({ round: data, me: mine, loading: false });
+  },
+  (err) => {
+    console.error("onValue error:", err);
+    setState({ loading: false, error: `อ่านข้อมูลไม่ได้: ${err.message}` });
   }
-  setState({ round: data, me: mine, loading: false });
-});
+);
 
 async function join() {
   const clean = state.name.trim().replace(/\s+/g, " ");
@@ -151,8 +158,9 @@ async function join() {
     } else {
       setState({ busy: false });
     }
-  } catch {
-    setState({ error: "บันทึกไม่สำเร็จ ลองกดใหม่อีกที", busy: false });
+  } catch (err) {
+    console.error("join error:", err);
+    setState({ error: `บันทึกไม่สำเร็จ: ${err.message}`, busy: false });
   }
 }
 
