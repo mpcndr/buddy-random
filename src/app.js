@@ -15,39 +15,64 @@ function getRoomId() {
 
 const ROOM_ID = getRoomId();
 const ME_KEY = `lucky_me_v1_${ROOM_ID}`;
+const RULES_KEY = `lucky_rules_v1_${ROOM_ID}`;
 
 const app = initializeApp(firebaseConfig);
 const db = getDatabase(app);
 const roomRef = ref(db, `rooms/${ROOM_ID}`);
-const drawsRef = ref(db, `rooms/${ROOM_ID}/draws`);
 
 const SHAKE_MS = 2600; // ช่วงเขย่ากระบอก
 const DROP_MS = 1100; // ช่วงไม้เซียมซีหล่นออกมา
 const MIN_PLAYERS = 2;
 const WIGGLE_MS = 300; // ความยาว 1 จังหวะของท่าเขย่า (ต้องตรงกับใน CSS)
+const RULES_LOCK_MS = 4000; // ต้องเปิดกติกาค้างไว้อย่างน้อยเท่านี้ก่อนปิดได้
+
+/*
+ * โครงข้อมูลห้อง rooms/{room}
+ *   players:   [{ id, name }]         ลำดับที่เข้าห้อง (ใช้เป็นเบอร์ไม้)
+ *   hostId:    id ของหัวห้อง (คนแรกที่ลงชื่อ)
+ *   started:   true เมื่อหัวห้องกดเริ่มเกม (หลังจากนั้นเข้าห้องเพิ่มไม่ได้)
+ *   turnId:    id ของคนที่ถูกสุ่มให้เขย่าตอนนี้ (หน้าจอแสดงให้เจ้าตัวเห็นคนเดียว)
+ *   shakenIds: { [id]: true }        คนที่เขย่าไปแล้ว (คนละครั้งเดียว)
+ *   draws:     [{ id, winnerId, byId, at }]
+ */
 
 function uid() {
   return Math.random().toString(36).slice(2, 10);
 }
 
+function pickRandom(list) {
+  return list[Math.floor(Math.random() * list.length)];
+}
+
+function storageGet(key) {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+function storageSet(key, value) {
+  try {
+    localStorage.setItem(key, value);
+  } catch {}
+}
+function storageRemove(key) {
+  try {
+    localStorage.removeItem(key);
+  } catch {}
+}
+
 function loadMe() {
   try {
-    const raw = localStorage.getItem(ME_KEY);
+    const raw = storageGet(ME_KEY);
     return raw ? JSON.parse(raw) : null;
   } catch {
     return null;
   }
 }
-function saveMe(me) {
-  try {
-    localStorage.setItem(ME_KEY, JSON.stringify(me));
-  } catch {}
-}
-function clearMe() {
-  try {
-    localStorage.removeItem(ME_KEY);
-  } catch {}
-}
+const saveMe = (me) => storageSet(ME_KEY, JSON.stringify(me));
+const clearMe = () => storageRemove(ME_KEY);
 
 function escapeHtml(str) {
   return String(str)
@@ -64,6 +89,8 @@ function vibrate(pattern) {
   } catch {}
 }
 
+const rulesRead = storageGet(RULES_KEY) === "1";
+
 const state = {
   round: null,
   me: loadMe(),
@@ -72,16 +99,19 @@ const state = {
   error: "",
   claim: null,
   busy: false,
-  confirm: null, // null | "draws" | "room"
+  confirm: null, // null | "restart" | "room"
   copied: false,
   pendingShakeAt: null, // เวลาที่เรากดเขย่าเอง (ระหว่างรอผลจาก Firebase)
   motionOn: false,
+  rulesOpen: !rulesRead,
+  rulesUnlockAt: rulesRead ? 0 : Date.now() + RULES_LOCK_MS,
 };
 
 // drawId -> เวลาบนเครื่องนี้ที่เริ่มเล่นแอนิเมชันของการสุ่มครั้งนั้น
 // (ใช้เวลาเครื่องตัวเอง ไม่ใช้เวลาจากเครื่องคนกด กันนาฬิกาแต่ละเครื่องไม่ตรงกัน)
 const seen = {};
 let firstSnapshot = true;
+let notifiedTurnKey = null;
 
 const root = document.getElementById("app");
 
@@ -94,12 +124,10 @@ function later(ms) {
   setTimeout(render, Math.max(0, ms) + 20);
 }
 
-function getDraws(round) {
-  return round?.draws ?? [];
-}
-function getPlayers(round) {
-  return round?.players ?? [];
-}
+const getDraws = (round) => round?.draws ?? [];
+const getPlayers = (round) => round?.players ?? [];
+const getShaken = (round) => round?.shakenIds ?? {};
+const getHostId = (round) => round?.hostId ?? getPlayers(round)[0]?.id ?? null;
 
 // อ่าน draw ใหม่ ๆ ที่เข้ามา แล้วตั้งเวลาเริ่มแอนิเมชันให้แต่ละอัน
 function ingest(data) {
@@ -167,6 +195,10 @@ function getPhase() {
   return { phase: "reveal", elapsed, last };
 }
 
+function isHost() {
+  return !!state.me && getHostId(state.round) === state.me.id;
+}
+
 async function join() {
   const clean = state.name.trim().replace(/\s+/g, " ");
   if (!clean) return setState({ error: "ใส่ชื่อก่อนนะ" });
@@ -188,8 +220,16 @@ async function join() {
         dupPlayer = dup;
         return; // abort, ไม่แก้ไขอะไร
       }
+      if (data.started) {
+        outcome = "started";
+        return;
+      }
       outcome = "ok";
-      return { ...data, players: [...players, { id: myId, name: clean }] };
+      return {
+        ...data,
+        hostId: data.hostId ?? players[0]?.id ?? myId,
+        players: [...players, { id: myId, name: clean }],
+      };
     });
 
     if (outcome === "ok" && result.committed) {
@@ -198,6 +238,8 @@ async function join() {
       setState({ me: mine, busy: false, name: "" });
     } else if (outcome === "duplicate") {
       setState({ claim: dupPlayer, busy: false });
+    } else if (outcome === "started") {
+      setState({ error: "เกมเริ่มไปแล้ว เข้าร่วมเพิ่มไม่ได้ ถ้าเคยลงชื่อไว้ ให้ใส่ชื่อเดิม", busy: false });
     } else {
       setState({ busy: false });
     }
@@ -207,13 +249,57 @@ async function join() {
   }
 }
 
+// หัวห้องกดเริ่มเกม: ล็อกรายชื่อ แล้วสุ่มลับ ๆ ว่าใครได้เขย่าคนแรก
+async function startGame() {
+  if (!isHost()) return;
+  setState({ busy: true, error: "" });
+  let outcome = null;
+  try {
+    await runTransaction(roomRef, (current) => {
+      const players = current?.players ?? [];
+      if (!current || current.started) {
+        outcome = "noop";
+        return;
+      }
+      if (players.length < MIN_PLAYERS) {
+        outcome = "few";
+        return;
+      }
+      outcome = "ok";
+      return { ...current, started: true, turnId: pickRandom(players).id, shakenIds: null, draws: null };
+    });
+    setState({ busy: false, error: outcome === "few" ? `ต้องมีอย่างน้อย ${MIN_PLAYERS} คนก่อนนะ` : "" });
+  } catch (err) {
+    console.error("start error:", err);
+    setState({ busy: false, error: `เริ่มเกมไม่สำเร็จ: ${err.message}` });
+  }
+}
+
+// หัวห้องสุ่มคนเขย่าใหม่ (เผื่อคนที่ถูกเลือกไม่อยู่หน้าจอ)
+async function rerollTurn() {
+  if (!isHost()) return;
+  setState({ busy: true, error: "" });
+  try {
+    await runTransaction(roomRef, (current) => {
+      if (!current?.started || !current.turnId) return;
+      const shaken = current.shakenIds ?? {};
+      const waiting = (current.players ?? []).filter((p) => !shaken[p.id]);
+      const others = waiting.filter((p) => p.id !== current.turnId);
+      if (!others.length) return;
+      return { ...current, turnId: pickRandom(others).id };
+    });
+    setState({ busy: false });
+  } catch (err) {
+    setState({ busy: false, error: `สุ่มใหม่ไม่สำเร็จ: ${err.message}` });
+  }
+}
+
 function canShake() {
-  if (!state.me || state.busy) return false;
+  const r = state.round;
+  if (!state.me || state.busy || !r?.started) return false;
+  if (r.turnId !== state.me.id || getShaken(r)[state.me.id]) return false;
   const { phase } = getPhase();
-  if (phase === "shaking" || phase === "drop") return false;
-  const players = getPlayers(state.round);
-  const won = new Set(getDraws(state.round).map((d) => d.winnerId));
-  return players.length >= MIN_PLAYERS && players.some((p) => !won.has(p.id));
+  return phase !== "shaking" && phase !== "drop";
 }
 
 async function shake() {
@@ -235,21 +321,25 @@ async function shake() {
         }
         const players = current.players ?? [];
         const draws = current.draws ?? [];
-        const lastDraw = draws[draws.length - 1];
-        if (lastDraw && Date.now() - lastDraw.at < SHAKE_MS + DROP_MS) {
-          outcome = "busy"; // มีคนอื่นเพิ่งเขย่าไปพร้อม ๆ กัน
+        const shaken = current.shakenIds ?? {};
+        if (!current.started || current.turnId !== me.id || shaken[me.id]) {
+          outcome = "notturn";
           return;
         }
         const won = new Set(draws.map((d) => d.winnerId));
         const pool = players.filter((p) => !won.has(p.id));
-        if (players.length < MIN_PLAYERS || pool.length === 0) {
+        if (pool.length === 0) {
           outcome = "empty";
           return;
         }
-        const winner = pool[Math.floor(Math.random() * pool.length)];
+        const winner = pickRandom(pool);
+        const nextShaken = { ...shaken, [me.id]: true };
+        const waiting = players.filter((p) => !nextShaken[p.id]);
         outcome = "ok";
         return {
           ...current,
+          shakenIds: nextShaken,
+          turnId: waiting.length ? pickRandom(waiting).id : null, // สุ่มลับ ๆ คนเขย่าคนถัดไป
           draws: [...draws, { id: uid(), winnerId: winner.id, byId: me.id, at: Date.now() }],
         };
       },
@@ -262,8 +352,8 @@ async function shake() {
       setState({ pendingShakeAt });
     } else {
       const msg =
-        outcome === "busy"
-          ? "มีเพื่อนเขย่าไปพร้อมกันพอดี รอดูผลก่อนนะ"
+        outcome === "notturn"
+          ? "ตอนนี้ไม่ใช่ตาของเธอแล้ว"
           : outcome === "gone"
             ? "ห้องนี้ถูกล้างไปแล้ว"
             : "ไม่มีชื่อเหลือให้สุ่มแล้ว";
@@ -329,13 +419,26 @@ async function copyLink() {
 function claimIdentity() {
   const mine = { id: state.claim.id, name: state.claim.name };
   saveMe(mine);
-  setState({ me: mine, claim: null });
+  setState({ me: mine, claim: null, error: "" });
 }
 
-async function clearDraws() {
+function openRules() {
+  setState({ rulesOpen: true, rulesUnlockAt: 0 }); // เปิดดูซ้ำ ปิดได้ทันที
+}
+function closeRules() {
+  if (Date.now() < state.rulesUnlockAt) return;
+  storageSet(RULES_KEY, "1");
+  setState({ rulesOpen: false });
+}
+
+// หัวห้อง: เริ่มเกมใหม่ เก็บรายชื่อไว้ กลับไปหน้ารอเริ่ม
+async function restartGame() {
   setState({ busy: true });
   try {
-    await remove(drawsRef);
+    await runTransaction(roomRef, (current) => {
+      if (!current) return;
+      return { ...current, started: null, turnId: null, shakenIds: null, draws: null };
+    });
   } catch {}
   setState({ confirm: null, error: "", busy: false });
 }
@@ -349,15 +452,18 @@ async function resetAll() {
   setState({ me: null, name: "", claim: null, confirm: null, error: "", busy: false });
 }
 
-function renderFooter(hasDraws) {
+function renderFooter() {
+  if (!isHost()) return "";
   if (state.confirm) {
     const isRoom = state.confirm === "room";
     return `
       <div class="sb-footer">
         <div class="sb-note" style="margin-top:0">${
-          isRoom ? "ล้างทั้งรายชื่อและผลสุ่มของห้องนี้ทั้งหมด" : "ล้างผลสุ่มทั้งหมด แต่เก็บรายชื่อไว้เหมือนเดิม"
+          isRoom
+            ? "ลบทั้งรายชื่อและผลสุ่มของห้องนี้ทั้งหมด"
+            : "ล้างผลสุ่มทั้งหมด เก็บรายชื่อไว้ แล้วกลับไปรอหัวห้องกดเริ่มใหม่"
         }</div>
-        <button class="sb-link warn" data-action="${isRoom ? "reset-confirm" : "clear-confirm"}" ${
+        <button class="sb-link warn" data-action="${isRoom ? "reset-confirm" : "restart-confirm"}" ${
           state.busy ? "disabled" : ""
         }>ยืนยัน</button>
         <button class="sb-link" data-action="confirm-cancel">ไม่เอาแล้ว</button>
@@ -365,7 +471,7 @@ function renderFooter(hasDraws) {
   }
   return `
     <div class="sb-footer">
-      ${hasDraws ? `<button class="sb-link" data-action="clear-ask">สุ่มใหม่ตั้งแต่ต้น</button>` : ""}
+      ${state.round?.started ? `<button class="sb-link" data-action="restart-ask">เริ่มเกมใหม่</button>` : ""}
       <button class="sb-link" data-action="reset-ask">ล้างห้อง</button>
     </div>`;
 }
@@ -399,30 +505,131 @@ function renderTube({ phase, elapsed }, stickCount, winnerNo) {
     </div>`;
 }
 
+function renderRules() {
+  const left = Math.ceil((state.rulesUnlockAt - Date.now()) / 1000);
+  const locked = left > 0;
+  return `
+    <div class="ss-modal" role="dialog" aria-modal="true" aria-labelledby="rules-title">
+      <div class="ss-modal-card">
+        <div class="sb-eyebrow">อ่านก่อนเล่น</div>
+        <h2 class="ss-modal-title" id="rules-title">กติกาเขย่าเซียมซี</h2>
+        <ol class="ss-rules">
+          <li><b>คนแรกที่ใส่ชื่อคือหัวห้อง</b> ส่งลิงก์ให้เพื่อน แล้วทุกคนใส่ชื่อลงกระบอก</li>
+          <li>คนมาครบแล้ว <b>หัวห้องกด “เริ่มเกม”</b> หลังเริ่มแล้วจะเข้าร่วมเพิ่มไม่ได้</li>
+          <li>ระบบจะ <b>สุ่มลับ ๆ</b> ว่าใครได้เขย่า คนที่ถูกเลือกจะเห็นบนจอตัวเองคนเดียว คนอื่นไม่รู้ว่าเป็นใคร</li>
+          <li>ถ้าจอขึ้นว่า <b>“ถึงตาเธอเขย่า”</b> ให้กดเขย่าเอง ทุกคนในห้องจะเห็นกระบอกสั่นและไม้ที่หล่นออกมาพร้อมกัน</li>
+          <li><b>1 คนเขย่าได้แค่ 1 ครั้ง</b> เขย่าเสร็จ ระบบจะสุ่มคนถัดไปจากคนที่ยังไม่ได้เขย่าต่อไปเรื่อย ๆ</li>
+          <li>ชื่อที่ถูกจับไปแล้วจะไม่ถูกจับซ้ำ (มีโอกาสจับได้ชื่อตัวเองนะ)</li>
+          <li>ถึงตาตัวเองแล้วอย่าให้ใครเห็นจอ และอย่าบอกใครว่าเป็นเรา 🤫</li>
+        </ol>
+        <button class="sb-btn" data-action="rules-close" ${locked ? "disabled" : ""}>${
+          locked ? `อ่านก่อนนะ… (${left})` : "เข้าใจแล้ว ไปเล่นกัน!"
+        }</button>
+      </div>
+    </div>`;
+}
+
+function renderGameCard(anim, players, draws) {
+  const r = state.round;
+  const me = state.me;
+  const animating = anim.phase === "shaking" || anim.phase === "drop";
+  const numberOf = (id) => players.findIndex((p) => p.id === id) + 1 || "?";
+  const nameOf = (id) => players.find((p) => p.id === id)?.name ?? "(ออกจากห้องแล้ว)";
+  const winnerId = anim.last?.winnerId;
+
+  let html = `<div class="sb-card"><div class="sb-card-inner">`;
+  html += renderTube(anim, players.length, winnerId ? numberOf(winnerId) : "");
+
+  if (anim.phase === "reveal" && winnerId) {
+    const revealDelay = Math.min(anim.elapsed - SHAKE_MS - DROP_MS, 600);
+    html += `
+      <div class="ss-result" style="animation-delay:-${revealDelay}ms">
+        <div class="sb-label">ไม้เบอร์ ${numberOf(winnerId)} · ผู้โชคดีคือ</div>
+        <div class="sb-buddy">${escapeHtml(nameOf(winnerId))}</div>
+        ${winnerId === me.id ? `<div class="ss-me">🎉 เธอเองนี่แหละ!</div>` : ""}
+      </div>`;
+  }
+
+  const myShaken = !!getShaken(r)[me.id];
+  const gameOver = r?.started && !r.turnId && draws.length > 0;
+  const myTurn = r?.started && r.turnId === me.id && !myShaken;
+
+  if (!r?.started) {
+    // ห้องรอเริ่ม
+    if (isHost()) {
+      html += `
+        <div class="ss-status"><b>เธอคือหัวห้อง</b><br />รอเพื่อนเข้ามาให้ครบ แล้วกดเริ่มเกมได้เลย</div>
+        <button class="sb-btn ss-shake-btn" data-action="start" ${
+          players.length < MIN_PLAYERS || state.busy ? "disabled" : ""
+        }>${players.length < MIN_PLAYERS ? "รอเพื่อนเข้าห้องก่อน" : `เริ่มเกม (${players.length} คน)`}</button>
+        <div class="sb-hint" style="margin-top:8px">กดแล้วระบบจะสุ่มลับ ๆ ว่าใครได้เขย่าคนแรก</div>`;
+    } else {
+      const hostName = nameOf(getHostId(r));
+      html += `<div class="ss-status">รอหัวห้อง <b>${escapeHtml(hostName)}</b> กดเริ่มเกม</div>`;
+    }
+  } else if (state.pendingShakeAt != null || (animating && anim.last?.byId === me.id)) {
+    html += `<button class="sb-btn ss-shake-btn" disabled>กำลังเขย่า…</button>`;
+  } else if (animating) {
+    // คนอื่นกำลังเขย่า ไม่โชว์อะไรเพิ่ม ให้ดูกระบอกอย่างเดียว
+  } else if (myTurn) {
+    html += `
+      <div class="ss-turn">
+        <div class="ss-turn-big">🫵 ถึงตาเธอเขย่า!</div>
+        <div>ระบบสุ่มให้ <b>${escapeHtml(me.name)}</b> เป็นคนเขย่าครั้งนี้<br />คนอื่นไม่รู้ว่าเป็นเธอ อย่าให้ใครเห็นจอนะ 🤫</div>
+      </div>
+      <button class="sb-btn ss-shake-btn" data-action="shake" ${canShake() ? "" : "disabled"}>เขย่าเซียมซี</button>
+      ${
+        motionSupported
+          ? `<button class="sb-pin" data-action="motion">${
+              state.motionOn ? "📳 เขย่ามือถือได้เลย (แตะเพื่อปิด)" : "📳 เปิดให้เขย่ามือถือจริงแทนกดปุ่ม"
+            }</button>`
+          : ""
+      }
+      <div class="sb-hint" style="margin-top:8px">เขย่าได้ครั้งเดียวนะ</div>`;
+  } else if (gameOver) {
+    html += `<div class="ss-status"><b>เขย่าครบทุกคนแล้ว 🎉</b><br />ดูผู้โชคดีทั้งหมดได้ด้านล่าง</div>`;
+  } else if (myShaken) {
+    html += `<div class="ss-status">เธอเขย่าไปแล้ว<br />รอคนถัดไปที่ถูกสุ่มเขย่า ไม่มีใครรู้ว่าเป็นใคร 🤫</div>`;
+  } else {
+    html += `<div class="ss-status">ยังไม่ถึงตาเธอ<br />ถ้าระบบสุ่มได้เธอ จอจะบอกเองนะ 🤫</div>`;
+  }
+
+  if (r?.started && r.turnId && isHost() && !animating && !myTurn) {
+    html += `<button class="sb-pin" data-action="reroll" ${
+      state.busy ? "disabled" : ""
+    }>คนที่ถูกสุ่มไม่อยู่หน้าจอ? สุ่มคนเขย่าใหม่</button>`;
+  }
+
+  if (state.error) html += `<div class="sb-err">${escapeHtml(state.error)}</div>`;
+  html += `</div></div>`;
+  return html;
+}
+
 function render() {
   if (state.loading) {
     root.innerHTML = `<div class="sb-loading">กำลังหยิบกระบอกเซียมซี…</div>`;
     return;
   }
 
-  const players = getPlayers(state.round);
-  const draws = getDraws(state.round);
+  const r = state.round;
+  const players = getPlayers(r);
+  const draws = getDraws(r);
   const anim = getPhase();
   const animating = anim.phase === "shaking" || anim.phase === "drop";
   // ระหว่างเขย่า ซ่อนผลครั้งล่าสุดไว้ก่อน ไม่ให้สปอยล์
   const shownDraws = animating && anim.last ? draws.slice(0, -1) : draws;
   const wonIds = new Set(shownDraws.map((d) => d.winnerId));
-  const remaining = players.filter((p) => !getDraws(state.round).some((d) => d.winnerId === p.id));
   const nameOf = (id) => players.find((p) => p.id === id)?.name ?? "(ออกจากห้องแล้ว)";
   const numberOf = (id) => players.findIndex((p) => p.id === id) + 1 || "?";
+  const hostId = getHostId(r);
 
   let html = `
     <div class="sb-eyebrow">เสี่ยงทาย</div>
     <h1 class="sb-title">เขย่าเซียมซี<br />หาผู้โชคดี</h1>
-    <p class="sb-sub">ทุกคนเข้าห้องแล้วใส่ชื่อ ใครก็ได้ในห้องกดเขย่า ทุกคนจะเห็นกระบอกสั่นพร้อมกัน แล้วไม้ที่หล่นออกมาคือผู้โชคดี</p>
+    <p class="sb-sub">ระบบสุ่มลับ ๆ ว่าใครได้เขย่า แล้วไม้ที่หล่นออกมาคือผู้โชคดี
+      <button class="sb-link" data-action="rules-open">อ่านกติกา</button></p>
   `;
 
-  // ยังไม่ได้ลงชื่อ
   if (!state.me) {
     html += `<div class="sb-card"><div class="sb-card-inner">`;
     if (state.claim) {
@@ -434,68 +641,39 @@ function render() {
         <button class="sb-btn ghost" data-action="claim-no">ใช้ชื่ออื่น</button>
       `;
     } else {
+      const started = !!r?.started;
       html += `
         <div class="sb-label">ชื่อของเธอ</div>
         <input class="sb-input" id="name-input" value="${escapeHtml(state.name)}" placeholder="เช่น mp" maxlength="20" />
-        ${players.length ? `<div class="sb-hint" style="text-align:left;margin-top:12px">ตอนนี้ในห้องมี ${players.length} คน</div>` : ""}
+        <div class="sb-hint" style="text-align:left;margin-top:12px">${
+          started
+            ? "เกมเริ่มไปแล้ว ถ้าเคยลงชื่อไว้ ใส่ชื่อเดิมเพื่อกลับเข้าห้อง"
+            : players.length
+              ? `ตอนนี้ในห้องมี ${players.length} คน`
+              : "เธอเป็นคนแรก จะได้เป็นหัวห้อง เป็นคนกดเริ่มเกม"
+        }</div>
         <button class="sb-btn" data-action="join" ${state.busy ? "disabled" : ""}>${
-          state.busy ? "กำลังใส่ชื่อ…" : "ใส่ชื่อลงกระบอก"
+          state.busy ? "กำลังใส่ชื่อ…" : started ? "กลับเข้าห้อง" : "ใส่ชื่อลงกระบอก"
         }</button>
         ${state.error ? `<div class="sb-err">${escapeHtml(state.error)}</div>` : ""}
       `;
     }
     html += `</div></div>`;
-  }
+  } else {
+    html += renderGameCard(anim, players, draws);
 
-  // ลงชื่อแล้ว: กระบอกเซียมซี
-  if (state.me) {
-    const winnerId = anim.last?.winnerId;
-    html += `<div class="sb-card"><div class="sb-card-inner">`;
-    html += renderTube(anim, players.length, winnerId ? numberOf(winnerId) : "");
-
-    if (anim.phase === "reveal" && winnerId) {
-      const isMe = winnerId === state.me.id;
-      const revealDelay = Math.min(anim.elapsed - SHAKE_MS - DROP_MS, 600);
-      html += `
-        <div class="ss-result" style="animation-delay:-${revealDelay}ms">
-          <div class="sb-label">ไม้เบอร์ ${numberOf(winnerId)} · ผู้โชคดีคือ</div>
-          <div class="sb-buddy">${escapeHtml(nameOf(winnerId))}</div>
-          ${isMe ? `<div class="ss-me">🎉 เธอเองนี่แหละ!</div>` : ""}
-        </div>`;
-    }
-
-    let label = draws.length ? "เขย่าอีกครั้ง" : "เขย่าเซียมซี";
-    if (animating) label = "กำลังเขย่า…";
-    else if (players.length < MIN_PLAYERS) label = "รอเพื่อนเข้าห้องก่อน";
-    else if (remaining.length === 0) label = "ทุกคนได้ไปครบแล้ว";
-
-    html += `
-      <button class="sb-btn ss-shake-btn" data-action="shake" ${canShake() ? "" : "disabled"}>${label}</button>
-      ${
-        motionSupported
-          ? `<button class="sb-pin" data-action="motion">${
-              state.motionOn ? "📳 เขย่ามือถือได้เลย (แตะเพื่อปิด)" : "📳 เปิดให้เขย่ามือถือจริงแทนกดปุ่ม"
-            }</button>`
-          : ""
-      }
-      ${state.error ? `<div class="sb-err">${escapeHtml(state.error)}</div>` : ""}
-      <div class="sb-hint" style="margin-top:8px">${
-        draws.length ? "คนที่ได้ไปแล้วจะไม่ถูกสุ่มซ้ำ" : "ทุกคนในห้องจะเห็นผลพร้อมกัน"
-      }</div>
-    </div></div>`;
-
-    // รายชื่อในห้อง
+    const shakenCount = Object.keys(getShaken(r)).length;
     html += `
       <div class="sb-card" style="margin-top:16px"><div class="sb-card-inner">
-        <div class="sb-label">ในกระบอกตอนนี้</div>
-        <div class="sb-count">${players.length}<span> คน</span></div>
+        <div class="sb-label">${r?.started ? "เขย่าไปแล้ว" : "ในห้องตอนนี้"}</div>
+        <div class="sb-count">${r?.started ? `${shakenCount}<span> / ${players.length} คน</span>` : `${players.length}<span> คน</span>`}</div>
         <div class="sb-stamps">
           ${players
             .map((p) => {
               const cls = [wonIds.has(p.id) ? "won" : "", p.id === state.me.id ? "me" : ""].join(" ");
-              return `<div class="sb-stamp ${cls}">${wonIds.has(p.id) ? "🏆 " : ""}${escapeHtml(p.name)}${
-                p.id === state.me.id ? " (เธอ)" : ""
-              }</div>`;
+              return `<div class="sb-stamp ${cls}">${wonIds.has(p.id) ? "🏆 " : ""}${p.id === hostId ? "👑 " : ""}${escapeHtml(
+                p.name
+              )}${p.id === state.me.id ? " (เธอ)" : ""}</div>`;
             })
             .join("")}
         </div>
@@ -510,16 +688,33 @@ function render() {
                </ol>`
             : ""
         }
-        <button class="sb-btn ghost" data-action="copy-link">
-          ${state.copied ? "คัดลอกแล้ว! ✓" : "🔗 คัดลอกลิงก์ชวนเพื่อนเข้าห้อง"}
-        </button>
+        ${
+          r?.started
+            ? ""
+            : `<button class="sb-btn ghost" data-action="copy-link">
+                 ${state.copied ? "คัดลอกแล้ว! ✓" : "🔗 คัดลอกลิงก์ชวนเพื่อนเข้าห้อง"}
+               </button>`
+        }
       </div></div>`;
+
+    // เพิ่งถึงตาเรา: สั่นเตือน (ครั้งเดียวต่อรอบ)
+    const myTurnNow = r?.started && r.turnId === state.me.id && !getShaken(r)[state.me.id] && !animating;
+    const turnKey = myTurnNow ? `${draws.length}` : null;
+    if (turnKey && turnKey !== notifiedTurnKey) vibrate([200, 100, 200]);
+    notifiedTurnKey = turnKey;
   }
 
-  html += renderFooter(draws.length > 0);
+  html += renderFooter();
+  if (state.rulesOpen) html += renderRules();
+  document.body.classList.toggle("ss-lock", state.rulesOpen);
   root.innerHTML = html;
   attachEvents();
 }
+
+// นับถอยหลังปุ่มปิดกติกา
+setInterval(() => {
+  if (state.rulesOpen && state.rulesUnlockAt && Date.now() < state.rulesUnlockAt + 1000) render();
+}, 1000);
 
 function attachEvents() {
   const nameInput = document.getElementById("name-input");
@@ -530,23 +725,29 @@ function attachEvents() {
     nameInput.addEventListener("keydown", (e) => {
       if (e.key === "Enter" && !state.busy) join();
     });
-    nameInput.focus();
-    nameInput.setSelectionRange(nameInput.value.length, nameInput.value.length);
+    if (!state.rulesOpen) {
+      nameInput.focus();
+      nameInput.setSelectionRange(nameInput.value.length, nameInput.value.length);
+    }
   }
 
   root.querySelectorAll("[data-action]").forEach((elm) => {
     elm.addEventListener("click", () => {
       const action = elm.dataset.action;
       if (action === "join") join();
+      else if (action === "start") startGame();
       else if (action === "shake") shake();
+      else if (action === "reroll") rerollTurn();
       else if (action === "motion") toggleMotion();
       else if (action === "copy-link") copyLink();
       else if (action === "claim-yes") claimIdentity();
       else if (action === "claim-no") setState({ claim: null });
-      else if (action === "clear-ask") setState({ confirm: "draws" });
+      else if (action === "rules-open") openRules();
+      else if (action === "rules-close") closeRules();
+      else if (action === "restart-ask") setState({ confirm: "restart" });
       else if (action === "reset-ask") setState({ confirm: "room" });
       else if (action === "confirm-cancel") setState({ confirm: null });
-      else if (action === "clear-confirm") clearDraws();
+      else if (action === "restart-confirm") restartGame();
       else if (action === "reset-confirm") resetAll();
     });
   });

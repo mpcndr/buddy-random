@@ -491,6 +491,123 @@ html, body {
   min-width: 62px;
 }
 
+.ss-status {
+  text-align: center;
+  font-size: 14.5px;
+  line-height: 1.7;
+  color: var(--ink-soft);
+  margin-top: 10px;
+}
+.ss-status b {
+  color: var(--ink);
+}
+.ss-turn {
+  margin-top: 8px;
+  padding: 16px 14px;
+  border-radius: 18px;
+  background: linear-gradient(135deg, #fff4d6 0%, #ffe6b0 100%);
+  border: 2px solid var(--gold);
+  text-align: center;
+  font-size: 14px;
+  line-height: 1.6;
+  color: #7a4a10;
+  animation: ssGlow 1.2s ease-in-out infinite alternate;
+}
+.ss-turn-big {
+  font-family: "Baloo 2", "IBM Plex Sans Thai", sans-serif;
+  font-size: 28px;
+  font-weight: 800;
+  color: var(--wax-dark);
+  margin-bottom: 4px;
+}
+.sb-sub .sb-link {
+  font-size: inherit;
+  padding: 0 2px;
+  color: var(--wax-dark);
+}
+
+/* ---------- modal กติกา ---------- */
+body.ss-lock {
+  overflow: hidden;
+}
+.ss-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: rgba(60, 25, 15, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  animation: ssFade 0.2s ease both;
+}
+.ss-modal-card {
+  width: 100%;
+  max-width: 400px;
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
+  box-sizing: border-box;
+  background: var(--paper);
+  border-radius: 24px;
+  padding: 24px 20px 20px;
+  box-shadow: 0 20px 50px rgba(60, 20, 10, 0.35);
+  animation: sbIn 0.3s cubic-bezier(0.2, 0.9, 0.3, 1.2) both;
+}
+.ss-modal-title {
+  font-family: "Baloo 2", "IBM Plex Sans Thai", sans-serif;
+  font-weight: 800;
+  font-size: 24px;
+  text-align: center;
+  color: var(--wax-dark);
+  margin: 4px 0 14px;
+}
+.ss-rules {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: r;
+}
+.ss-rules li {
+  counter-increment: r;
+  position: relative;
+  padding: 8px 0 8px 36px;
+  font-size: 14px;
+  line-height: 1.6;
+  border-bottom: 1px dashed rgba(224, 73, 60, 0.18);
+}
+.ss-rules li::before {
+  content: counter(r);
+  position: absolute;
+  left: 0;
+  top: 8px;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--wax);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.ss-rules b {
+  color: var(--wax-dark);
+}
+
+@keyframes ssGlow {
+  from {
+    box-shadow: 0 0 0 0 rgba(242, 179, 61, 0.2);
+  }
+  to {
+    box-shadow: 0 0 0 8px rgba(242, 179, 61, 0.28);
+  }
+}
+@keyframes ssFade {
+  from {
+    opacity: 0;
+  }
+}
 @keyframes ssShake {
   0% {
     transform: translateX(-7px) rotate(-13deg);
@@ -538,7 +655,10 @@ html, body {
   .is-shaking .ss-stick {
     animation-duration: 0.6s;
   }
-  .ss-result {
+  .ss-result,
+  .ss-turn,
+  .ss-modal,
+  .ss-modal-card {
     animation: none;
   }
 }
