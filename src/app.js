@@ -505,11 +505,30 @@ function renderTube({ phase, elapsed }, stickCount, winnerNo) {
     </div>`;
 }
 
-function renderRules() {
+function rulesButtonState() {
   const left = Math.ceil((state.rulesUnlockAt - Date.now()) / 1000);
-  const locked = left > 0;
-  return `
-    <div class="ss-modal" role="dialog" aria-modal="true" aria-labelledby="rules-title">
+  return left > 0
+    ? { locked: true, text: `อ่านก่อนนะ… (${left})` }
+    : { locked: false, text: "เข้าใจแล้ว ไปเล่นกัน!" };
+}
+
+// modal กติกาอยู่นอก #app และสร้างครั้งเดียวตอนเปิด
+// (ถ้าวาดใหม่ทุกครั้งที่ render แอนิเมชันเปิดจะเล่นซ้ำจนจอกระพริบ)
+let rulesEl = null;
+function syncRules() {
+  document.body.classList.toggle("ss-lock", state.rulesOpen);
+  if (!state.rulesOpen) {
+    rulesEl?.remove();
+    rulesEl = null;
+    return;
+  }
+  if (!rulesEl) {
+    rulesEl = document.createElement("div");
+    rulesEl.className = "ss-modal";
+    rulesEl.setAttribute("role", "dialog");
+    rulesEl.setAttribute("aria-modal", "true");
+    rulesEl.setAttribute("aria-labelledby", "rules-title");
+    rulesEl.innerHTML = `
       <div class="ss-modal-card">
         <div class="sb-eyebrow">อ่านก่อนเล่น</div>
         <h2 class="ss-modal-title" id="rules-title">กติกาเขย่าเซียมซี</h2>
@@ -522,11 +541,15 @@ function renderRules() {
           <li>ชื่อที่ถูกจับไปแล้วจะไม่ถูกจับซ้ำ (มีโอกาสจับได้ชื่อตัวเองนะ)</li>
           <li>ถึงตาตัวเองแล้วอย่าให้ใครเห็นจอ และอย่าบอกใครว่าเป็นเรา 🤫</li>
         </ol>
-        <button class="sb-btn" data-action="rules-close" ${locked ? "disabled" : ""}>${
-          locked ? `อ่านก่อนนะ… (${left})` : "เข้าใจแล้ว ไปเล่นกัน!"
-        }</button>
-      </div>
-    </div>`;
+        <button class="sb-btn" data-rules-close></button>
+      </div>`;
+    rulesEl.querySelector("[data-rules-close]").addEventListener("click", closeRules);
+    document.body.appendChild(rulesEl);
+  }
+  const btn = rulesEl.querySelector("[data-rules-close]");
+  const { locked, text } = rulesButtonState();
+  btn.disabled = locked;
+  if (btn.textContent !== text) btn.textContent = text;
 }
 
 function renderGameCard(anim, players, draws) {
@@ -608,6 +631,7 @@ function renderGameCard(anim, players, draws) {
 function render() {
   if (state.loading) {
     root.innerHTML = `<div class="sb-loading">กำลังหยิบกระบอกเซียมซี…</div>`;
+    syncRules();
     return;
   }
 
@@ -705,16 +729,15 @@ function render() {
   }
 
   html += renderFooter();
-  if (state.rulesOpen) html += renderRules();
-  document.body.classList.toggle("ss-lock", state.rulesOpen);
   root.innerHTML = html;
   attachEvents();
+  syncRules();
 }
 
-// นับถอยหลังปุ่มปิดกติกา
+// นับถอยหลังปุ่มปิดกติกา (อัปเดตแค่ปุ่ม ไม่วาดทั้งหน้าใหม่)
 setInterval(() => {
-  if (state.rulesOpen && state.rulesUnlockAt && Date.now() < state.rulesUnlockAt + 1000) render();
-}, 1000);
+  if (state.rulesOpen) syncRules();
+}, 250);
 
 function attachEvents() {
   const nameInput = document.getElementById("name-input");
@@ -743,7 +766,6 @@ function attachEvents() {
       else if (action === "claim-yes") claimIdentity();
       else if (action === "claim-no") setState({ claim: null });
       else if (action === "rules-open") openRules();
-      else if (action === "rules-close") closeRules();
       else if (action === "restart-ask") setState({ confirm: "restart" });
       else if (action === "reset-ask") setState({ confirm: "room" });
       else if (action === "confirm-cancel") setState({ confirm: null });
