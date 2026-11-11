@@ -18,8 +18,8 @@ const ME_KEY = `lucky_me_v1_${ROOM_ID}`;
 
 const app = initializeApp(firebaseConfig);
 const db = getDatabase(app);
-const roomRef = ref(db, `luckyRooms/${ROOM_ID}`);
-const drawsRef = ref(db, `luckyRooms/${ROOM_ID}/draws`);
+const roomRef = ref(db, `rooms/${ROOM_ID}`);
+const drawsRef = ref(db, `rooms/${ROOM_ID}/draws`);
 
 const SHAKE_MS = 2600; // ช่วงเขย่ากระบอก
 const DROP_MS = 1100; // ช่วงไม้เซียมซีหล่นออกมา
