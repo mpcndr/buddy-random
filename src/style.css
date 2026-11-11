@@ -292,16 +292,6 @@ html, body {
   font-size: 14px;
 }
 
-.sb-stamp.won {
-  background: #fff4d6;
-  border: 2px solid var(--gold);
-  color: #8a5a10;
-}
-.sb-stamp.won.me {
-  background: linear-gradient(135deg, var(--gold) 0%, var(--gold-dark) 100%);
-  color: #fff;
-}
-
 /* ---------- กระบอกเซียมซี ---------- */
 .ss-stage {
   position: relative;
@@ -470,25 +460,24 @@ html, body {
   display: block;
   margin: 8px auto 0;
 }
-.ss-history {
-  margin: 0 0 4px;
-  padding: 0;
-  list-style: none;
-  counter-reset: h;
+.ss-secret {
+  margin-top: 12px;
+  padding: 12px 14px;
+  border-radius: 16px;
+  background: #fff4d6;
+  border: 2px dashed var(--gold);
+  text-align: center;
 }
-.ss-history li {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  padding: 7px 0;
-  font-weight: 600;
-  border-bottom: 1px dashed rgba(224, 73, 60, 0.18);
+.ss-secret-label {
+  font-size: 12.5px;
+  color: #8a5a10;
 }
-.ss-history li span {
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--ink-soft);
-  min-width: 62px;
+.ss-secret-name {
+  font-family: "Baloo 2", "IBM Plex Sans Thai", sans-serif;
+  font-size: 26px;
+  font-weight: 800;
+  color: var(--wax-dark);
+  word-break: break-word;
 }
 
 .ss-status {

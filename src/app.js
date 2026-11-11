@@ -26,6 +26,7 @@ const DROP_MS = 1100; // ช่วงไม้เซียมซีหล่น�
 const MIN_PLAYERS = 2;
 const WIGGLE_MS = 300; // ความยาว 1 จังหวะของท่าเขย่า (ต้องตรงกับใน CSS)
 const RULES_LOCK_MS = 4000; // ต้องเปิดกติกาค้างไว้อย่างน้อยเท่านี้ก่อนปิดได้
+const REROLL_WAIT_MS = 15000; // หัวห้องต้องรอเท่านี้ก่อนกดสุ่มคนเขย่าใหม่ได้ (กันกดเล่น)
 
 /*
  * โครงข้อมูลห้อง rooms/{room}
@@ -34,7 +35,9 @@ const RULES_LOCK_MS = 4000; // ต้องเปิดกติกาค้า�
  *   started:   true เมื่อหัวห้องกดเริ่มเกม (หลังจากนั้นเข้าห้องเพิ่มไม่ได้)
  *   turnId:    id ของคนที่ถูกสุ่มให้เขย่าตอนนี้ (หน้าจอแสดงให้เจ้าตัวเห็นคนเดียว)
  *   shakenIds: { [id]: true }        คนที่เขย่าไปแล้ว (คนละครั้งเดียว)
- *   draws:     [{ id, winnerId, byId, at }]
+ *   draws:     [{ id, winnerId, byId, stickNo, at }]
+ *              stickNo สุ่มใหม่ทุกครั้ง ไม่เกี่ยวกับลำดับชื่อ (เดาไม่ได้ว่าเป็นใคร)
+ *              ชื่อที่จับได้ หน้าจอโชว์ให้คนเขย่า (byId) เห็นคนเดียว
  */
 
 function uid() {
@@ -112,6 +115,8 @@ const state = {
 const seen = {};
 let firstSnapshot = true;
 let notifiedTurnKey = null;
+let turnKey = null; // ตาปัจจุบัน: เปลี่ยนเมื่อมีคนเขย่าหรือหัวห้องสุ่มใหม่
+let turnSeenAt = 0;
 
 const root = document.getElementById("app");
 
@@ -172,6 +177,11 @@ onValue(
       }
     }
     const pendingShakeAt = ingest(data);
+    const key = data?.started && data.turnId ? `${data.turnId}|${getDraws(data).length}` : null;
+    if (key !== turnKey) {
+      turnKey = key;
+      turnSeenAt = Date.now();
+    }
     setState({ round: data, me: mine, loading: false, pendingShakeAt });
   },
   (err) => {
@@ -277,7 +287,7 @@ async function startGame() {
 
 // หัวห้องสุ่มคนเขย่าใหม่ (เผื่อคนที่ถูกเลือกไม่อยู่หน้าจอ)
 async function rerollTurn() {
-  if (!isHost()) return;
+  if (!isHost() || Date.now() < rerollReadyAt()) return;
   setState({ busy: true, error: "" });
   try {
     await runTransaction(roomRef, (current) => {
@@ -292,6 +302,19 @@ async function rerollTurn() {
   } catch (err) {
     setState({ busy: false, error: `สุ่มใหม่ไม่สำเร็จ: ${err.message}` });
   }
+}
+
+// เวลาที่หัวห้องจะกดสุ่มคนเขย่าใหม่ได้: 15 วิ หลังจากตานี้เริ่ม (หรือหลังแอนิเมชันไม้หล่นจบ)
+function rerollReadyAt() {
+  const last = getDraws(state.round).at(-1);
+  const animEnd = last ? (seen[last.id] ?? 0) + SHAKE_MS + DROP_MS : 0;
+  return Math.max(turnSeenAt, animEnd) + REROLL_WAIT_MS;
+}
+function rerollButtonState() {
+  const left = Math.ceil((rerollReadyAt() - Date.now()) / 1000);
+  return left > 0
+    ? { locked: true, text: `คนที่ถูกสุ่มไม่อยู่หน้าจอ? สุ่มคนเขย่าใหม่ได้ในอีก ${left} วิ` }
+    : { locked: false, text: "คนที่ถูกสุ่มไม่อยู่หน้าจอ? สุ่มคนเขย่าใหม่" };
 }
 
 function canShake() {
@@ -333,6 +356,9 @@ async function shake() {
           return;
         }
         const winner = pickRandom(pool);
+        const usedNo = new Set(draws.map((d) => d.stickNo));
+        const maxNo = Math.max(30, players.length * 3);
+        const freeNo = Array.from({ length: maxNo }, (_, i) => i + 1).filter((n) => !usedNo.has(n));
         const nextShaken = { ...shaken, [me.id]: true };
         const waiting = players.filter((p) => !nextShaken[p.id]);
         outcome = "ok";
@@ -340,7 +366,7 @@ async function shake() {
           ...current,
           shakenIds: nextShaken,
           turnId: waiting.length ? pickRandom(waiting).id : null, // สุ่มลับ ๆ คนเขย่าคนถัดไป
-          draws: [...draws, { id: uid(), winnerId: winner.id, byId: me.id, at: Date.now() }],
+          draws: [...draws, { id: uid(), winnerId: winner.id, byId: me.id, stickNo: pickRandom(freeNo), at: Date.now() }],
         };
       },
       { applyLocally: false }
@@ -537,9 +563,11 @@ function syncRules() {
           <li>คนมาครบแล้ว <b>หัวห้องกด “เริ่มเกม”</b> หลังเริ่มแล้วจะเข้าร่วมเพิ่มไม่ได้</li>
           <li>ระบบจะ <b>สุ่มลับ ๆ</b> ว่าใครได้เขย่า คนที่ถูกเลือกจะเห็นบนจอตัวเองคนเดียว คนอื่นไม่รู้ว่าเป็นใคร</li>
           <li>ถ้าจอขึ้นว่า <b>“ถึงตาเธอเขย่า”</b> ให้กดเขย่าเอง ทุกคนในห้องจะเห็นกระบอกสั่นและไม้ที่หล่นออกมาพร้อมกัน</li>
+          <li>ทุกคนจะเห็นแค่ <b>เบอร์ไม้</b> ส่วน <b>ชื่อที่จับได้ คนเขย่าจะรู้คนเดียว</b></li>
           <li><b>1 คนเขย่าได้แค่ 1 ครั้ง</b> เขย่าเสร็จ ระบบจะสุ่มคนถัดไปจากคนที่ยังไม่ได้เขย่าต่อไปเรื่อย ๆ</li>
           <li>ชื่อที่ถูกจับไปแล้วจะไม่ถูกจับซ้ำ (มีโอกาสจับได้ชื่อตัวเองนะ)</li>
-          <li>ถึงตาตัวเองแล้วอย่าให้ใครเห็นจอ และอย่าบอกใครว่าเป็นเรา 🤫</li>
+          <li>ถ้าคนที่ถูกสุ่มไม่อยู่หน้าจอ หัวห้องกดสุ่มคนเขย่าใหม่ได้หลังรอ 15 วินาที</li>
+          <li>ถึงตาตัวเองแล้วอย่าให้ใครเห็นจอ และอย่าบอกใครว่าเป็นเรา หรือจับได้ใคร 🤫</li>
         </ol>
         <button class="sb-btn" data-rules-close></button>
       </div>`;
@@ -556,20 +584,28 @@ function renderGameCard(anim, players, draws) {
   const r = state.round;
   const me = state.me;
   const animating = anim.phase === "shaking" || anim.phase === "drop";
-  const numberOf = (id) => players.findIndex((p) => p.id === id) + 1 || "?";
   const nameOf = (id) => players.find((p) => p.id === id)?.name ?? "(ออกจากห้องแล้ว)";
-  const winnerId = anim.last?.winnerId;
+  const last = anim.last;
+  const myDraw = draws.find((d) => d.byId === me.id);
 
   let html = `<div class="sb-card"><div class="sb-card-inner">`;
-  html += renderTube(anim, players.length, winnerId ? numberOf(winnerId) : "");
+  html += renderTube(anim, players.length, last?.stickNo ?? "?");
 
-  if (anim.phase === "reveal" && winnerId) {
+  if (anim.phase === "reveal" && last) {
     const revealDelay = Math.min(anim.elapsed - SHAKE_MS - DROP_MS, 600);
+    const mineShake = last.byId === me.id;
     html += `
       <div class="ss-result" style="animation-delay:-${revealDelay}ms">
-        <div class="sb-label">ไม้เบอร์ ${numberOf(winnerId)} · ผู้โชคดีคือ</div>
-        <div class="sb-buddy">${escapeHtml(nameOf(winnerId))}</div>
-        ${winnerId === me.id ? `<div class="ss-me">🎉 เธอเองนี่แหละ!</div>` : ""}
+        <div class="sb-label">ไม้ที่หล่นออกมา</div>
+        <div class="sb-buddy">เบอร์ ${last.stickNo ?? "?"}</div>
+        ${
+          mineShake
+            ? `<div class="ss-secret">
+                 <div class="ss-secret-label">🤫 เธอจับได้ (เห็นคนเดียว)</div>
+                 <div class="ss-secret-name">${escapeHtml(nameOf(last.winnerId))}</div>
+               </div>`
+            : `<div class="sb-hint">มีแค่คนเขย่าที่รู้ว่าไม้นี้เป็นของใคร 🤫</div>`
+        }
       </div>`;
   }
 
@@ -610,17 +646,26 @@ function renderGameCard(anim, players, draws) {
       }
       <div class="sb-hint" style="margin-top:8px">เขย่าได้ครั้งเดียวนะ</div>`;
   } else if (gameOver) {
-    html += `<div class="ss-status"><b>เขย่าครบทุกคนแล้ว 🎉</b><br />ดูผู้โชคดีทั้งหมดได้ด้านล่าง</div>`;
+    html += `<div class="ss-status"><b>เขย่าครบทุกคนแล้ว 🎉</b></div>`;
   } else if (myShaken) {
     html += `<div class="ss-status">เธอเขย่าไปแล้ว<br />รอคนถัดไปที่ถูกสุ่มเขย่า ไม่มีใครรู้ว่าเป็นใคร 🤫</div>`;
   } else {
     html += `<div class="ss-status">ยังไม่ถึงตาเธอ<br />ถ้าระบบสุ่มได้เธอ จอจะบอกเองนะ 🤫</div>`;
   }
 
-  if (r?.started && r.turnId && isHost() && !animating && !myTurn) {
-    html += `<button class="sb-pin" data-action="reroll" ${
-      state.busy ? "disabled" : ""
-    }>คนที่ถูกสุ่มไม่อยู่หน้าจอ? สุ่มคนเขย่าใหม่</button>`;
+  const showingMine = myDraw && (animating || anim.phase === "reveal") && last?.id === myDraw.id;
+  if (myDraw && !showingMine) {
+    html += `
+      <div class="ss-secret">
+        <div class="ss-secret-label">🤫 ไม้เบอร์ ${myDraw.stickNo ?? "?"} ที่เธอเขย่าได้ คือ</div>
+        <div class="ss-secret-name">${escapeHtml(nameOf(myDraw.winnerId))}</div>
+      </div>`;
+  }
+
+  const waitingCount = players.filter((p) => !getShaken(r)[p.id]).length;
+  if (r?.started && r.turnId && isHost() && !animating && !myTurn && waitingCount > 1) {
+    const { locked, text } = rerollButtonState();
+    html += `<button class="sb-pin" data-action="reroll" ${state.busy || locked ? "disabled" : ""}>${text}</button>`;
   }
 
   if (state.error) html += `<div class="sb-err">${escapeHtml(state.error)}</div>`;
@@ -640,17 +685,12 @@ function render() {
   const draws = getDraws(r);
   const anim = getPhase();
   const animating = anim.phase === "shaking" || anim.phase === "drop";
-  // ระหว่างเขย่า ซ่อนผลครั้งล่าสุดไว้ก่อน ไม่ให้สปอยล์
-  const shownDraws = animating && anim.last ? draws.slice(0, -1) : draws;
-  const wonIds = new Set(shownDraws.map((d) => d.winnerId));
-  const nameOf = (id) => players.find((p) => p.id === id)?.name ?? "(ออกจากห้องแล้ว)";
-  const numberOf = (id) => players.findIndex((p) => p.id === id) + 1 || "?";
   const hostId = getHostId(r);
 
   let html = `
     <div class="sb-eyebrow">เสี่ยงทาย</div>
     <h1 class="sb-title">เขย่าเซียมซี<br />หาผู้โชคดี</h1>
-    <p class="sb-sub">ระบบสุ่มลับ ๆ ว่าใครได้เขย่า แล้วไม้ที่หล่นออกมาคือผู้โชคดี
+    <p class="sb-sub">ระบบสุ่มลับ ๆ ว่าใครได้เขย่า ไม้ที่หล่นออกมาเป็นของใคร มีแค่คนเขย่าที่รู้
       <button class="sb-link" data-action="rules-open">อ่านกติกา</button></p>
   `;
 
@@ -694,24 +734,13 @@ function render() {
         <div class="sb-stamps">
           ${players
             .map((p) => {
-              const cls = [wonIds.has(p.id) ? "won" : "", p.id === state.me.id ? "me" : ""].join(" ");
-              return `<div class="sb-stamp ${cls}">${wonIds.has(p.id) ? "🏆 " : ""}${p.id === hostId ? "👑 " : ""}${escapeHtml(
+              const cls = p.id === state.me.id ? "me" : "";
+              return `<div class="sb-stamp ${cls}">${p.id === hostId ? "👑 " : ""}${escapeHtml(
                 p.name
               )}${p.id === state.me.id ? " (เธอ)" : ""}</div>`;
             })
             .join("")}
         </div>
-        ${
-          shownDraws.length
-            ? `<div class="sb-rule" style="margin-top:18px"></div>
-               <div class="sb-label">ผู้โชคดีที่ผ่านมา</div>
-               <ol class="ss-history">
-                 ${shownDraws
-                   .map((d) => `<li><span>ไม้เบอร์ ${numberOf(d.winnerId)}</span>${escapeHtml(nameOf(d.winnerId))}</li>`)
-                   .join("")}
-               </ol>`
-            : ""
-        }
         ${
           r?.started
             ? ""
@@ -737,6 +766,12 @@ function render() {
 // นับถอยหลังปุ่มปิดกติกา (อัปเดตแค่ปุ่ม ไม่วาดทั้งหน้าใหม่)
 setInterval(() => {
   if (state.rulesOpen) syncRules();
+  const reroll = root.querySelector('[data-action="reroll"]');
+  if (reroll) {
+    const { locked, text } = rerollButtonState();
+    reroll.disabled = state.busy || locked;
+    if (reroll.textContent !== text) reroll.textContent = text;
+  }
 }, 250);
 
 function attachEvents() {
