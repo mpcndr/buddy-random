@@ -317,6 +317,19 @@ function rerollButtonState() {
     : { locked: false, text: "คนที่ถูกสุ่มไม่อยู่หน้าจอ? สุ่มคนเขย่าใหม่" };
 }
 
+// เลือกชื่อที่คนเขย่าจะจับได้: ห้ามได้ชื่อตัวเอง
+// และห้ามเลือกแบบที่ทำให้คนเขย่าคนสุดท้ายเหลือแค่ชื่อตัวเองให้จับ (เกมจะค้าง)
+// กรณีเหลือคนรอเขย่ามากกว่า 1 คน จับคู่ต่อได้เสมอ เลยต้องเช็กแค่ตอนจะเหลือคนสุดท้าย
+function pickWinner(pool, shakerId, waitingAfter) {
+  const notSelf = pool.filter((p) => p.id !== shakerId);
+  const safe = notSelf.filter((p) => {
+    if (waitingAfter.length !== 1) return true;
+    const rest = pool.filter((q) => q.id !== p.id);
+    return !(rest.length === 1 && rest[0].id === waitingAfter[0].id);
+  });
+  return pickRandom(safe.length ? safe : notSelf.length ? notSelf : pool);
+}
+
 function canShake() {
   const r = state.round;
   if (!state.me || state.busy || !r?.started) return false;
@@ -355,12 +368,12 @@ async function shake() {
           outcome = "empty";
           return;
         }
-        const winner = pickRandom(pool);
+        const nextShaken = { ...shaken, [me.id]: true };
+        const waiting = players.filter((p) => !nextShaken[p.id]);
+        const winner = pickWinner(pool, me.id, waiting);
         const usedNo = new Set(draws.map((d) => d.stickNo));
         const maxNo = Math.max(30, players.length * 3);
         const freeNo = Array.from({ length: maxNo }, (_, i) => i + 1).filter((n) => !usedNo.has(n));
-        const nextShaken = { ...shaken, [me.id]: true };
-        const waiting = players.filter((p) => !nextShaken[p.id]);
         outcome = "ok";
         return {
           ...current,
@@ -565,7 +578,7 @@ function syncRules() {
           <li>ถ้าจอขึ้นว่า <b>“ถึงตาเธอเขย่า”</b> ให้กดเขย่าเอง ทุกคนในห้องจะเห็นกระบอกสั่นและไม้ที่หล่นออกมาพร้อมกัน</li>
           <li>ทุกคนจะเห็นแค่ <b>เบอร์ไม้</b> ส่วน <b>ชื่อที่จับได้ คนเขย่าจะรู้คนเดียว</b></li>
           <li><b>1 คนเขย่าได้แค่ 1 ครั้ง</b> เขย่าเสร็จ ระบบจะสุ่มคนถัดไปจากคนที่ยังไม่ได้เขย่าต่อไปเรื่อย ๆ</li>
-          <li>ชื่อที่ถูกจับไปแล้วจะไม่ถูกจับซ้ำ (มีโอกาสจับได้ชื่อตัวเองนะ)</li>
+          <li>ชื่อที่ถูกจับไปแล้วจะไม่ถูกจับซ้ำ และ <b>ไม่มีทางจับได้ชื่อตัวเอง</b></li>
           <li>ถ้าคนที่ถูกสุ่มไม่อยู่หน้าจอ หัวห้องกดสุ่มคนเขย่าใหม่ได้หลังรอ 15 วินาที</li>
           <li>ถึงตาตัวเองแล้วอย่าให้ใครเห็นจอ และอย่าบอกใครว่าเป็นเรา หรือจับได้ใคร 🤫</li>
         </ol>
